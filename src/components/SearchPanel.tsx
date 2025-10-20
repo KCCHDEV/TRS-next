@@ -6,11 +6,17 @@ import {
   CUSTOM_FONT_PRESET_ID,
   DEFAULT_STAGE_PREFERENCES,
   FONT_PRESETS,
-  StagePreferences,
-  StagePhaseToggles,
+  MIN_CENTERED_ZOOM,
+  MAX_CENTERED_ZOOM,
   clampSpeedMultiplier,
+  clampCenteredZoom,
   cloneStagePreferences,
   getFontPreset,
+} from "@/lib/settings";
+import type {
+  StagePlaybackMode,
+  StagePreferences,
+  StagePhaseToggles,
 } from "@/lib/settings";
 
 export interface SearchPayload {
@@ -30,7 +36,29 @@ interface SearchPanelProps {
 
 const MIN_SPEED = 0.25;
 const MAX_SPEED = 4;
-const SPEED_STEP = 0.05;
+const SPEED_STEP = 0.01;
+const CENTERED_ZOOM_STEP = 0.01;
+
+const SPEED_PRESETS: Array<{ label: string; value: number }> = [
+  { label: "0.35×", value: 0.35 },
+  { label: "0.5×", value: 0.5 },
+  { label: "0.75×", value: 0.75 },
+  { label: "1×", value: 1 },
+  { label: "1.25×", value: 1.25 },
+  { label: "1.5×", value: 1.5 },
+  { label: "2×", value: 2 },
+  { label: "3×", value: 3 },
+];
+
+const CENTERED_ZOOM_PRESETS: Array<{ label: string; value: number }> = [
+  { label: "1.0×", value: 1 },
+  { label: "1.15×", value: 1.15 },
+  { label: "1.3×", value: 1.3 },
+  { label: "1.5×", value: 1.5 },
+  { label: "1.7×", value: 1.7 },
+  { label: "1.9×", value: 1.9 },
+  { label: "2.1×", value: 2.1 },
+];
 
 const createDefaultPayload = (): SearchPayload => ({
   topic: "",
@@ -117,6 +145,9 @@ export default function SearchPanel({
       payload.stagePreferences.customFontFamily.trim();
     payload.stagePreferences.customFontUrl =
       payload.stagePreferences.customFontUrl.trim();
+    payload.stagePreferences.centeredZoomScale = clampCenteredZoom(
+      payload.stagePreferences.centeredZoomScale
+    );
 
     onSubmit(payload);
   }
@@ -125,13 +156,15 @@ export default function SearchPanel({
     <form className="panel" onSubmit={handleSubmit}>
       <div className="panel-grid">
         <label className="field">
-          <span>Topic</span>
+          <span>Topic (optional)</span>
           <input
-            required
-            placeholder="e.g. Artificial intelligence"
+            placeholder="Leave blank to auto-detect from keywords"
             value={form.topic}
             onChange={(event) => handleChange("topic", event.target.value)}
           />
+          <span className="field-hint">
+            The app will try your keywords as backup search terms when this is empty.
+          </span>
         </label>
 
         <label className="field">
@@ -215,8 +248,35 @@ export default function SearchPanel({
               }
             />
           </div>
+          <div className="preset-row">
+            {SPEED_PRESETS.map((preset) => {
+              const isActive =
+                Math.abs(form.stagePreferences.speedMultiplier - preset.value) <
+                0.001;
+
+              return (
+                <button
+                  key={preset.value}
+                  type="button"
+                  className={`timeline-pill ${
+                    isActive ? "is-enabled" : "is-disabled"
+                  }`}
+                  disabled={isActive}
+                  onClick={() =>
+                    updateStagePreferences((prev) => ({
+                      ...prev,
+                      speedMultiplier: clampSpeedMultiplier(preset.value),
+                    }))
+                  }
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
           <span className="field-hint">
-            Apply a global speed scale (lower is faster, higher is slower).
+            Current ×{form.stagePreferences.speedMultiplier.toFixed(2)}. Apply a
+            global speed scale (lower is faster, higher is slower).
           </span>
         </label>
       </div>
@@ -239,6 +299,92 @@ export default function SearchPanel({
             </label>
           ))}
         </div>
+
+        <label className="field">
+          <span>Playback mode</span>
+          <select
+            value={form.stagePreferences.playbackMode}
+            onChange={(event) =>
+              updateStagePreferences((prev) => ({
+                ...prev,
+                playbackMode: event.target.value as StagePlaybackMode,
+              }))
+            }
+          >
+            <option value="cinematic">Cinematic (pan / zoom)</option>
+            <option value="centered">Centered fast cuts</option>
+          </select>
+          <span className="field-hint">
+            Centered mode keeps the highlight locked mid-frame and speeds up transitions.
+          </span>
+        </label>
+
+        {form.stagePreferences.playbackMode === "centered" ? (
+          <label className="field">
+            <span>Centered zoom</span>
+            <div className="speed-control">
+              <input
+                type="range"
+                min={MIN_CENTERED_ZOOM}
+                max={MAX_CENTERED_ZOOM}
+                step={CENTERED_ZOOM_STEP}
+                value={form.stagePreferences.centeredZoomScale}
+                onChange={(event) =>
+                  updateStagePreferences((prev) => ({
+                    ...prev,
+                    centeredZoomScale: clampCenteredZoom(Number(event.target.value)),
+                  }))
+                }
+              />
+              <input
+                type="number"
+                min={MIN_CENTERED_ZOOM}
+                max={MAX_CENTERED_ZOOM}
+                step={CENTERED_ZOOM_STEP}
+                value={form.stagePreferences.centeredZoomScale}
+                onChange={(event) =>
+                  updateStagePreferences((prev) => ({
+                    ...prev,
+                    centeredZoomScale: clampCenteredZoom(Number(event.target.value)),
+                  }))
+                }
+              />
+            </div>
+            <div className="preset-row">
+              {CENTERED_ZOOM_PRESETS.map((preset) => {
+                const isActive =
+                  Math.abs(
+                    form.stagePreferences.centeredZoomScale - preset.value
+                  ) < 0.01;
+
+                return (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    className={`timeline-pill ${
+                      isActive ? "is-enabled" : "is-disabled"
+                    }`}
+                    disabled={isActive}
+                    onClick={() =>
+                      updateStagePreferences((prev) => ({
+                        ...prev,
+                        centeredZoomScale: clampCenteredZoom(preset.value),
+                      }))
+                    }
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="field-hint">
+              Current ×{form.stagePreferences.centeredZoomScale.toFixed(
+                2
+              )}. Increase above 1.0 to zoom in while keeping the highlight
+              locked at centre.
+            </span>
+          </label>
+        ) : null}
       </div>
 
       <div className="panel-section">

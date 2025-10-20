@@ -30,6 +30,14 @@ export const DEFAULT_DURATIONS = {
   transitionMs: 120,
 };
 
+const CENTERED_MODE_DURATIONS = {
+  panMs: 0,
+  zoomMs: 0,
+  highlightMs: 140,
+  holdMs: 120,
+  transitionMs: 90,
+};
+
 export function splitKeywords(input: string): string[] {
   return input
     .split(/[,;\n]/g)
@@ -82,6 +90,8 @@ export function buildTimeline(
 ): TimelineItem[] {
   const toggles = preferences.phases;
   const multiplier = clampSpeedMultiplier(preferences.speedMultiplier ?? 1);
+  const baseDurations =
+    preferences.playbackMode === "centered" ? CENTERED_MODE_DURATIONS : DEFAULT_DURATIONS;
 
   const resolveDuration = (enabled: boolean, base: number) =>
     enabled ? Math.max(0, Math.round(base * multiplier)) : 0;
@@ -89,10 +99,10 @@ export function buildTimeline(
   return matches.map((match) => ({
     keyword: match.keyword,
     paragraphIndex: match.paragraphIndex,
-    panMs: resolveDuration(toggles.pan, DEFAULT_DURATIONS.panMs),
-    zoomMs: resolveDuration(toggles.zoom, DEFAULT_DURATIONS.zoomMs),
-    highlightMs: resolveDuration(toggles.highlight, DEFAULT_DURATIONS.highlightMs),
-    holdMs: resolveDuration(toggles.hold, DEFAULT_DURATIONS.holdMs),
-    transitionMs: resolveDuration(toggles.transition, DEFAULT_DURATIONS.transitionMs),
+    panMs: resolveDuration(toggles.pan, baseDurations.panMs),
+    zoomMs: resolveDuration(toggles.zoom, baseDurations.zoomMs),
+    highlightMs: resolveDuration(toggles.highlight, baseDurations.highlightMs),
+    holdMs: resolveDuration(toggles.hold, baseDurations.holdMs),
+    transitionMs: resolveDuration(toggles.transition, baseDurations.transitionMs),
   }));
 }

@@ -48,9 +48,13 @@ export const FONT_PRESETS: FontPreset[] = [
 
 export const CUSTOM_FONT_PRESET_ID = "custom";
 
+export type StagePlaybackMode = "cinematic" | "centered";
+
 export interface StagePreferences {
   phases: StagePhaseToggles;
+  playbackMode: StagePlaybackMode;
   speedMultiplier: number;
+  centeredZoomScale: number;
   fontPreset: string;
   customFontFamily: string;
   customFontUrl: string;
@@ -69,7 +73,9 @@ export const DEFAULT_STAGE_PREFERENCES: StagePreferences = {
     hold: true,
     transition: true,
   },
+  playbackMode: "cinematic",
   speedMultiplier: 1,
+  centeredZoomScale: 1.15,
   fontPreset: FONT_PRESETS[0]?.id ?? "inter",
   customFontFamily: "",
   customFontUrl: "",
@@ -79,11 +85,21 @@ export const DEFAULT_STAGE_PREFERENCES: StagePreferences = {
   truncateText: true,
 };
 
+export const MIN_CENTERED_ZOOM = 0.9;
+export const MAX_CENTERED_ZOOM = 2.2;
+
 export function clampSpeedMultiplier(value: number): number {
   if (!Number.isFinite(value)) {
     return 1;
   }
   return Math.min(4, Math.max(0.25, Number(value)));
+}
+
+export function clampCenteredZoom(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_STAGE_PREFERENCES.centeredZoomScale;
+  }
+  return Math.min(MAX_CENTERED_ZOOM, Math.max(MIN_CENTERED_ZOOM, Number(value)));
 }
 
 export function getFontPreset(id: string): FontPreset | undefined {
@@ -123,7 +139,8 @@ export function cloneStagePreferences(
   preferences: StagePreferences = DEFAULT_STAGE_PREFERENCES
 ): StagePreferences {
   return {
+    ...DEFAULT_STAGE_PREFERENCES,
     ...preferences,
-    phases: { ...preferences.phases },
+    phases: { ...DEFAULT_STAGE_PREFERENCES.phases, ...preferences.phases },
   };
 }

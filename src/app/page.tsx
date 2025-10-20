@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import SearchPanel, { SearchPayload } from "@/components/SearchPanel";
 import ArticlePreview from "@/components/ArticlePreview";
 import TimelineSummary from "@/components/TimelineSummary";
@@ -13,13 +13,16 @@ import {
 import {
   buildTimeline,
   collectMatches,
+  splitKeywords,
   type KeywordMatch,
   type TimelineItem,
 } from "@/lib/text";
 import {
   clampSpeedMultiplier,
+  cloneStagePreferences,
   DEFAULT_STAGE_PREFERENCES,
 } from "@/lib/settings";
+import type { StagePreferences } from "@/lib/settings";
 
 type FetchState = "idle" | "loading" | "error" | "ready";
 
@@ -54,17 +57,65 @@ export default function Home() {
     setActiveMatchIndex(null);
 
     try {
-      const article = await fetchArticleByTopic(payload.topic, payload.language);
+      const seen = new Set<string>();
+      const normalizedTopic = payload.topic.trim();
+      const candidateTerms: string[] = [];
+
+      const pushTerm = (term: string) => {
+        const trimmed = term.trim();
+        if (!trimmed) {
+          return;
+        }
+        const key = trimmed.toLocaleLowerCase();
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        candidateTerms.push(trimmed);
+      };
+
+      pushTerm(normalizedTopic);
+      splitKeywords(payload.keywords).forEach(pushTerm);
+
+      if (candidateTerms.length === 0) {
+        setState({
+          ...INITIAL_STATE,
+          status: "error",
+          message: "Provide at least one topic or keyword to search for.",
+        });
+        setActiveMatchIndex(null);
+        return;
+      }
+
+      let article: WikiArticle | null = null;
+      let matchedTerm: string | null = null;
+
+      for (const term of candidateTerms) {
+        const result = await fetchArticleByTopic(term, payload.language);
+
+        if (result) {
+          article = result;
+          matchedTerm = term;
+          break;
+        }
+      }
 
       if (!article) {
         setActiveMatchIndex(null);
         setState({
           ...INITIAL_STATE,
           status: "error",
-          message: `No Wikipedia article found for "${payload.topic}" (${payload.language.toUpperCase()}).`,
+          message: `No Wikipedia article found for ${candidateTerms
+            .map((term) => `"${term}"`)
+            .join(", ")} (${payload.language.toUpperCase()}).`,
         });
         return;
       }
+
+      const resolvedTopic = article.title;
+      const usedFallback =
+        normalizedTopic.length === 0 ||
+        (matchedTerm && matchedTerm.localeCompare(normalizedTopic, undefined, { sensitivity: "accent" }) !== 0);
 
       const matches = collectMatches(article, payload.keywords)
         .sort((a, b) => {
@@ -79,13 +130,20 @@ export default function Home() {
       const timeline = buildTimeline(matches, payload.stagePreferences);
       setActiveMatchIndex(matches.length > 0 ? 0 : null);
 
+      const resolvedPayload: SearchPayload = {
+        ...payload,
+        topic: resolvedTopic,
+      };
+
       setState({
         status: "ready",
-        message: `Loaded "${article.title}" with ${matches.length} planned match cut target(s).`,
+        message: `Loaded "${article.title}" with ${matches.length} planned match cut target(s)${
+          usedFallback && matchedTerm ? ` (auto-selected via "${matchedTerm}")` : ""
+        }.`,
         article,
         matches,
         timeline,
-        payload,
+        payload: resolvedPayload,
       });
     } catch (error) {
       const fallbackMessage =
@@ -108,6 +166,32 @@ export default function Home() {
   const stagePreferences = useMemo(
     () => state.payload?.stagePreferences ?? DEFAULT_STAGE_PREFERENCES,
     [state.payload?.stagePreferences]
+  );
+
+  const handleStagePreferencesChange = useCallback(
+    (updater: (prev: StagePreferences) => StagePreferences) => {
+      setState((previous) => {
+        if (!previous.payload) {
+          return previous;
+        }
+
+        const basePreferences = cloneStagePreferences(
+          previous.payload.stagePreferences ?? DEFAULT_STAGE_PREFERENCES
+        );
+        const nextPreferences = cloneStagePreferences(updater(basePreferences));
+        const nextTimeline = buildTimeline(previous.matches, nextPreferences);
+
+        return {
+          ...previous,
+          timeline: nextTimeline,
+          payload: {
+            ...previous.payload,
+            stagePreferences: nextPreferences,
+          },
+        };
+      });
+    },
+    []
   );
 
   return (
@@ -134,7 +218,7 @@ export default function Home() {
             />
           ) : (
             <section className="placeholder">
-              <p>Search for a topic to load the article preview.</p>
+              <p>Search for a topic or keywords to load the article preview.</p>
             </section>
           )}
         </div>
@@ -147,6 +231,7 @@ export default function Home() {
             highlightColor={state.payload?.highlightColor ?? "#facc15"}
             stagePreferences={stagePreferences}
             onActiveMatchChange={setActiveMatchIndex}
+            onStagePreferencesChange={handleStagePreferencesChange}
           />
           <TimelineSummary
             matches={state.matches}

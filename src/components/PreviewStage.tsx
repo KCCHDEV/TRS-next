@@ -6,6 +6,10 @@ import { DEFAULT_DURATIONS } from "@/lib/text";
 import type { WikiArticle } from "@/lib/wiki";
 import {
   CUSTOM_FONT_PRESET_ID,
+  clampCenteredZoom,
+  clampSpeedMultiplier,
+  MAX_CENTERED_ZOOM,
+  MIN_CENTERED_ZOOM,
   resolveFontFamilies,
   type StagePreferences,
 } from "@/lib/settings";
@@ -19,6 +23,9 @@ interface PreviewStageProps {
   highlightColor: string;
   stagePreferences: StagePreferences;
   onActiveMatchChange?(index: number | null): void;
+  onStagePreferencesChange?(
+    updater: (prev: StagePreferences) => StagePreferences
+  ): void;
 }
 
 type PresetOption =
@@ -102,6 +109,17 @@ const RESOLUTION_OPTIONS: Array<{ value: ResolutionOption; label: string }> = [
   { value: "1080x1920", label: "1080x1920 (Vertical 9:16)" },
   { value: "1080x1080", label: "1080x1080 (Square 1:1)" },
 ];
+
+const SPEED_PRESETS = [0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+const CENTERED_ZOOM_PRESETS = [1, 1.15, 1.3, 1.5, 1.7, 1.9, 2.1];
+const MIN_STAGE_SPEED = 0.25;
+const MAX_STAGE_SPEED = 4;
+const STAGE_SPEED_STEP = 0.01;
+const CENTERED_ZOOM_STEP = 0.01;
+const formatMultiplier = (value: number): string => {
+  const rounded = Math.round(value);
+  return Math.abs(value - rounded) < 0.01 ? String(rounded) : value.toFixed(2);
+};
 
 interface CanvasFonts {
   text: string;
@@ -260,12 +278,7 @@ const drawMatchFrame = (
 ) => {
   fillStageBackground(ctx, renderOptions.preferences);
   const { preferences, fonts } = renderOptions;
-
-  ctx.save();
-  ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
-  ctx.translate(0, options.offsetY);
-  ctx.scale(options.scale, options.scale);
-  ctx.translate(-CANVAS_WIDTH / 2, -CANVAS_HEIGHT / 2);
+  const isCenteredMode = preferences.playbackMode === "centered";
 
   const paragraph = article.paragraphs[match.paragraphIndex] ?? "";
   const beforeSource = paragraph.slice(0, match.start);
@@ -287,7 +300,57 @@ const drawMatchFrame = (
   const lines = wrapTokens(ctx, tokens, CANVAS_WIDTH - STAGE_PADDING_X * 2);
   const contentHeight = lines.length * LINE_HEIGHT;
   const startY = (CANVAS_HEIGHT - contentHeight) / 2;
+
+  let highlightTop = Number.POSITIVE_INFINITY;
+  let highlightBottom = Number.NEGATIVE_INFINITY;
+  let highlightLeft = Number.POSITIVE_INFINITY;
+  let highlightRight = Number.NEGATIVE_INFINITY;
+
+  lines.forEach((line, lineIndex) => {
+    const lineWidth = measureLineWidth(ctx, line);
+    let cursorX = (CANVAS_WIDTH - lineWidth) / 2;
+    const cursorY = startY + lineIndex * LINE_HEIGHT;
+
+    line.forEach((token) => {
+      const width = ctx.measureText(token.text).width;
+
+      if (token.type === "highlight") {
+        highlightTop = Math.min(highlightTop, cursorY - 6);
+        highlightBottom = Math.max(highlightBottom, cursorY + LINE_HEIGHT + 6);
+        highlightLeft = Math.min(highlightLeft, cursorX - 8);
+        highlightRight = Math.max(highlightRight, cursorX + width + 8);
+      }
+
+      cursorX += width;
+    });
+  });
+
+  const hasHighlightVertical =
+    highlightTop !== Number.POSITIVE_INFINITY && highlightBottom !== Number.NEGATIVE_INFINITY;
+  const hasHighlightHorizontal =
+    highlightLeft !== Number.POSITIVE_INFINITY && highlightRight !== Number.NEGATIVE_INFINITY;
+  const highlightMidY = hasHighlightVertical
+    ? (highlightTop + highlightBottom) / 2
+    : startY + contentHeight / 2;
+  const highlightMidX = hasHighlightHorizontal
+    ? (highlightLeft + highlightRight) / 2
+    : CANVAS_WIDTH / 2;
   const [r, g, b] = hexToRgb(renderOptions.highlightColor);
+
+  ctx.save();
+  if (isCenteredMode) {
+    ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + options.offsetY);
+    ctx.scale(options.scale, options.scale);
+    ctx.translate(-highlightMidX, -highlightMidY);
+  } else {
+    ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+    ctx.translate(0, options.offsetY);
+    ctx.scale(options.scale, options.scale);
+    ctx.translate(-CANVAS_WIDTH / 2, -CANVAS_HEIGHT / 2);
+  }
+  ctx.font = fonts.text;
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
 
   lines.forEach((line, lineIndex) => {
     const lineWidth = measureLineWidth(ctx, line);
@@ -388,6 +451,7 @@ export default function PreviewStage({
   highlightColor,
   stagePreferences,
   onActiveMatchChange,
+  onStagePreferencesChange,
 }: PreviewStageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<AnimationController | null>(null);
@@ -474,6 +538,16 @@ export default function PreviewStage({
   );
 
   const stageFontFamily = fontFamilies.cssFamily;
+  const isCenteredMode = stagePreferences.playbackMode === "centered";
+  const baseStageScale = useMemo(
+    () =>
+      isCenteredMode
+        ? clampCenteredZoom(stagePreferences.centeredZoomScale ?? 1)
+        : 0.94,
+    [isCenteredMode, stagePreferences.centeredZoomScale]
+  );
+  const canAdjustStage = Boolean(onStagePreferencesChange);
+  const showOverlay = stagePreferences.showOverlay;
 
   const renderOptions = useMemo<RenderOptions>(
     () => ({
@@ -680,6 +754,45 @@ export default function PreviewStage({
     };
   }, [stopPlayback, updateDownloadUrl]);
 
+  const handleStageSpeedChange = useCallback(
+    (value: number) => {
+      if (!onStagePreferencesChange) {
+        return;
+      }
+      void stopPlayback(true);
+      onStagePreferencesChange((prev) => ({
+        ...prev,
+        speedMultiplier: clampSpeedMultiplier(value),
+      }));
+    },
+    [onStagePreferencesChange, stopPlayback]
+  );
+
+  const handleStageZoomChange = useCallback(
+    (value: number) => {
+      if (!onStagePreferencesChange) {
+        return;
+      }
+      void stopPlayback(true);
+      onStagePreferencesChange((prev) => ({
+        ...prev,
+        centeredZoomScale: clampCenteredZoom(value),
+      }));
+    },
+    [onStagePreferencesChange, stopPlayback]
+  );
+
+  const handleOverlayToggle = useCallback(() => {
+    if (!onStagePreferencesChange) {
+      return;
+    }
+    void stopPlayback(true);
+    onStagePreferencesChange((prev) => ({
+      ...prev,
+      showOverlay: !prev.showOverlay,
+    }));
+  }, [onStagePreferencesChange, stopPlayback]);
+
   const startRecording = async (): Promise<boolean> => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -774,12 +887,13 @@ export default function PreviewStage({
     }
 
     const controller = createController();
-    setIsPlaying(true);
-    let currentState: FrameState = {
-      scale: 0.94,
+    const initialFrameState = (): FrameState => ({
+      scale: baseStageScale,
       offsetY: 0,
       highlightAlpha: 0,
-    };
+    });
+    setIsPlaying(true);
+    let currentState: FrameState = initialFrameState();
 
     const animateTo = async (
       target: Partial<FrameState>,
@@ -883,11 +997,7 @@ export default function PreviewStage({
       const match = matches[index];
       setActiveIndex(index);
 
-      currentState = {
-        scale: 0.94,
-        offsetY: 0,
-        highlightAlpha: 0,
-      };
+      currentState = initialFrameState();
 
       const { phases } = stagePreferences;
 
@@ -903,7 +1013,7 @@ export default function PreviewStage({
 
       const schedule = timeline[index] ?? DEFAULT_DURATIONS;
 
-      if (phases.intro) {
+      if (phases.intro && !isCenteredMode) {
         await animateTo({ scale: 1, highlightAlpha: 0 }, INTRO_DURATION, "intro", match, index);
       }
       if (phases.pan && schedule.panMs > 0) {
@@ -919,13 +1029,10 @@ export default function PreviewStage({
         await animateTo({}, schedule.holdMs, "hold", match, index);
       }
       if (phases.transition && schedule.transitionMs > 0) {
-        await animateTo(
-          { highlightAlpha: 0, scale: 1, offsetY: 0 },
-          schedule.transitionMs,
-          "transition",
-          match,
-          index
-        );
+        const transitionTarget = isCenteredMode
+          ? { highlightAlpha: 0, offsetY: 0 }
+          : { highlightAlpha: 0, scale: 1, offsetY: 0 };
+        await animateTo(transitionTarget, schedule.transitionMs, "transition", match, index);
       }
     }
 
@@ -1017,7 +1124,92 @@ export default function PreviewStage({
           >
             Export WebM
           </button>
+      </div>
+      </div>
+
+      <div className="stage-tuners">
+        <div className="stage-tuner">
+          <div className="stage-tuner-header">
+            <span>Overlay</span>
+            <span>{showOverlay ? "Visible" : "Hidden"}</span>
+          </div>
+          <button
+            type="button"
+            className={`timeline-pill ${showOverlay ? "is-enabled" : "is-disabled"}`}
+            onClick={handleOverlayToggle}
+            disabled={!canAdjustStage}
+          >
+            {showOverlay ? "Hide debug text" : "Show debug text"}
+          </button>
         </div>
+
+        <div className="stage-tuner">
+          <div className="stage-tuner-header">
+            <span>Speed</span>
+            <span>×{formatMultiplier(stagePreferences.speedMultiplier)}</span>
+          </div>
+          <input
+            type="range"
+            min={MIN_STAGE_SPEED}
+            max={MAX_STAGE_SPEED}
+            step={STAGE_SPEED_STEP}
+            value={stagePreferences.speedMultiplier}
+            disabled={!canAdjustStage}
+            onChange={(event) => handleStageSpeedChange(Number(event.target.value))}
+          />
+          <div className="stage-preset-row">
+            {SPEED_PRESETS.map((preset) => {
+              const isActive =
+                Math.abs(stagePreferences.speedMultiplier - preset) < 0.01;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  className={`timeline-pill ${isActive ? "is-enabled" : "is-disabled"}`}
+                  disabled={!canAdjustStage || isActive}
+                  onClick={() => handleStageSpeedChange(preset)}
+                >
+                  ×{formatMultiplier(preset)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {isCenteredMode ? (
+          <div className="stage-tuner">
+            <div className="stage-tuner-header">
+              <span>Zoom</span>
+              <span>×{formatMultiplier(stagePreferences.centeredZoomScale)}</span>
+            </div>
+            <input
+              type="range"
+              min={MIN_CENTERED_ZOOM}
+              max={MAX_CENTERED_ZOOM}
+              step={CENTERED_ZOOM_STEP}
+              value={stagePreferences.centeredZoomScale}
+              disabled={!canAdjustStage}
+              onChange={(event) => handleStageZoomChange(Number(event.target.value))}
+            />
+            <div className="stage-preset-row">
+              {CENTERED_ZOOM_PRESETS.map((preset) => {
+                const isActive =
+                  Math.abs(stagePreferences.centeredZoomScale - preset) < 0.01;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    className={`timeline-pill ${isActive ? "is-enabled" : "is-disabled"}`}
+                  disabled={!canAdjustStage || isActive}
+                  onClick={() => handleStageZoomChange(preset)}
+                >
+                  ×{formatMultiplier(preset)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        ) : null}
       </div>
 
       <div className="stage-export-settings">
